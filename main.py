@@ -6,6 +6,7 @@ from PIL import Image, ImageTk
 import threading
 from ultralytics import YOLO
 import os
+import unicodedata
 
 class TrafficSignDetectionApp:
     def __init__(self, root):
@@ -31,6 +32,8 @@ class TrafficSignDetectionApp:
         
         # Khởi tạo YOLO model
         self.model = None
+        self.class_names_vie = []
+        self.class_names_vie_ascii = []
         self.load_model()
         
         # Biến điều khiển
@@ -39,6 +42,7 @@ class TrafficSignDetectionApp:
         self.cap = None
         self.video_path = None
         self.current_frame = None
+        self.last_detected_vie = []
         
         # Tạo giao diện
         self.create_widgets()
@@ -47,14 +51,34 @@ class TrafficSignDetectionApp:
     def load_model(self):
         """Tải mô hình YOLO"""
         try:
-            # Sử dụng YOLOv8 pre-trained model
-            # Có thể thay bằng model custom nếu có
-            self.model = YOLO('yolov8n.pt')  # yolov8n = nano (nhỏ nhất, nhanh nhất)
+            self.model = YOLO('model/best.pt')
             print("Đã tải mô hình YOLO thành công!")
+            self.load_class_names('classes_vie.txt')
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể tải mô hình YOLO: {str(e)}")
             self.model = None
     
+    def strip_accents(self, s: str) -> str:
+        nf = unicodedata.normalize('NFD', s)
+        no_marks = ''.join(c for c in nf if unicodedata.category(c) != 'Mn')
+        return no_marks.replace('Đ', 'D').replace('đ', 'd')
+
+    def load_class_names(self, path):
+        """Đọc tên lớp và tạo phiên bản không dấu."""
+        try:
+            if os.path.exists(path):
+                with open(path, 'r', encoding='utf-8') as f:
+                    lines = [ln.strip() for ln in f if ln.strip()]
+                self.class_names_vie = [name.replace('*', '').strip() for name in lines]
+                self.class_names_vie_ascii = [self.strip_accents(n) for n in self.class_names_vie]
+                print(f"Đã tải {len(self.class_names_vie)} lớp (không dấu).")
+            else:
+                print("Không tìm thấy file classes_vie.txt.")
+        except Exception as e:
+            print(f"Lỗi đọc file classes_vie.txt: {e}")
+            self.class_names_vie = []
+            self.class_names_vie_ascii = []
+
     def setup_styles(self):
         """Thiết lập style cho các widget"""
         style = ttk.Style()
@@ -190,6 +214,18 @@ class TrafficSignDetectionApp:
                                     anchor=tk.CENTER,
                                     justify=tk.CENTER)
         self.video_label.pack(fill=tk.BOTH, expand=True)
+        
+        # Panel overlay (trong khung review)
+        self.overlay_panel = tk.Label(video_display_frame,
+                                      text="Chưa phát hiện",
+                                      bg="#000000",
+                                      fg="#ffffff",
+                                      font=('Segoe UI', 10),
+                                      justify=tk.LEFT,
+                                      anchor=tk.NW,
+                                      padx=8, pady=6,
+                                      bd=0)
+        self.overlay_panel.place(x=10, y=10)
         
         # Frame thông tin với card style
         info_card = tk.Frame(main_frame, bg=self.colors['bg_card'], relief=tk.FLAT, bd=0)
@@ -363,32 +399,129 @@ class TrafficSignDetectionApp:
         thread = threading.Thread(target=camera_thread, daemon=True)
         thread.start()
     
+    def draw_detected_panel(self, img, labels):
+        """Vẽ panel danh sách biển báo đã phát hiện góc trên trái."""
+        if not labels:
+            panel_text = "Khong phat hien"
+        else:
+            panel_text = "Phat hien: " + ", ".join(labels)
+        # Gói dòng nếu quá dài
+        max_len = 60
+        lines = []
+        while len(panel_text) > max_len:
+            cut = panel_text[:max_len]
+            # tìm vị trí dấu phẩy gần nhất để ngắt
+            if "," in cut:
+                pos = cut.rfind(",")
+                lines.append(panel_text[:pos+1])
+                panel_text = panel_text[pos+2:].strip()
+            else:
+                lines.append(cut)
+                panel_text = panel_text[max_len:].strip()
+        lines.append(panel_text)
+
+        x0, y0 = 10, 10
+        pad_x, pad_y = 8, 8
+        line_h = 0
+        max_w = 0
+        for ln in lines:
+            (tw, th), _ = cv2.getTextSize(ln, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+            line_h = max(line_h, th)
+            max_w = max(max_w, tw)
+        panel_w = max_w + pad_x * 2
+        panel_h = line_h * len(lines) + pad_y * 2 + (len(lines)-1)*4
+
+        # Nền mờ
+        overlay = img.copy()
+        cv2.rectangle(overlay, (x0, y0), (x0 + panel_w, y0 + panel_h), (0, 0, 0), -1)
+        alpha = 0.35
+        img = cv2.addWeighted(overlay, alpha, img, 1 - alpha, 0)
+
+        # Viền
+        cv2.rectangle(img, (x0, y0), (x0 + panel_w, y0 + panel_h), (0, 255, 0), 1)
+
+        # Vẽ text
+        y_text = y0 + pad_y + line_h
+        for ln in lines:
+            cv2.putText(img, ln, (x0 + pad_x, y_text),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            y_text += line_h + 4
+        return img
+
+    def update_overlay_panel(self, labels_vie):
+        """Cập nhật panel bên trong khung video (giữ tiếng Việt có dấu)."""
+        if not labels_vie:
+            txt = "Đang quét...\nKhông phát hiện."
+        else:
+            # Gói dòng nếu quá dài
+            prefix = "Đã phát hiện:"
+            joined = ", ".join(labels_vie)
+            full = f"{prefix} {joined}"
+            lines = []
+            max_len = 55
+            while len(full) > max_len:
+                cut = full[:max_len]
+                if "," in cut:
+                    pos = cut.rfind(",")
+                    lines.append(full[:pos+1])
+                    full = full[pos+2:].strip()
+                else:
+                    lines.append(cut)
+                    full = full[max_len:].strip()
+            lines.append(full)
+            txt = "\n".join(lines)
+        self.overlay_panel.config(text=txt)
+
     def detect_traffic_signs(self, frame):
-        """Nhận diện biển báo giao thông trong frame"""
+        """Nhận diện và vẽ nhãn + panel tổng hợp (panel hiển thị tiếng Việt có dấu)."""
         if self.model is None:
             return frame
-        
         try:
-            # Chạy YOLO detection
             results = self.model(frame, conf=0.25, verbose=False)
-            
-            # Vẽ kết quả lên frame
-            annotated_frame = results[0].plot()
-            
-            # Cập nhật thông tin
             detections = results[0].boxes
+            annotated = frame.copy()
+            class_names_ascii = []
+            class_names_vie = []
             if len(detections) > 0:
-                num_detections = len(detections)
-                classes = [int(cls) for cls in detections.cls]
-                class_names = [self.model.names[int(cls)] for cls in classes]
-                unique_classes = list(set(class_names))
-                info_text = f"✅ Phát hiện {num_detections} đối tượng: {', '.join(unique_classes)}"
+                for box in detections:
+                    x1, y1, x2, y2 = box.xyxy[0].tolist()
+                    cls_id = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    # Lấy không dấu cho vẽ lên ảnh
+                    if self.class_names_vie_ascii and cls_id < len(self.class_names_vie_ascii):
+                        label_ascii = self.class_names_vie_ascii[cls_id]
+                    else:
+                        label_ascii = self.model.names.get(cls_id, f"cls_{cls_id}")
+                    # Lấy có dấu cho panel
+                    if self.class_names_vie and cls_id < len(self.class_names_vie):
+                        label_vie = self.class_names_vie[cls_id]
+                    else:
+                        label_vie = label_ascii
+                    class_names_ascii.append(label_ascii)
+                    class_names_vie.append(label_vie)
+                    text = f"{label_ascii} {conf:.2f}"
+                    cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    cv2.rectangle(annotated, (int(x1), int(y1)-th-8), (int(x1)+tw+4, int(y1)), (0, 255, 0), -1)
+                    cv2.putText(annotated, text, (int(x1)+2, int(y1)-6),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
+                # Lọc duy nhất theo thứ tự
+                seen_vie = set()
+                unique_vie = []
+                for n in class_names_vie:
+                    if n not in seen_vie:
+                        seen_vie.add(n)
+                        unique_vie.append(n)
+                self.last_detected_vie = unique_vie
+                info_text = f"Phát hiện {len(detections)} đối tượng: {', '.join(unique_vie)}"
                 self.info_label.config(text=info_text, fg=self.colors['success'])
+                self.update_overlay_panel(unique_vie)
             else:
-                self.info_label.config(text="🔍 Đang quét... Không phát hiện biển báo", 
-                                     fg=self.colors['text_secondary'])
-            
-            return annotated_frame
+                self.last_detected_vie = []
+                self.info_label.config(text="Đang quét... Không phát hiện biển báo",
+                                       fg=self.colors['text_secondary'])
+                self.update_overlay_panel([])
+            return annotated
         except Exception as e:
             print(f"Lỗi khi nhận diện: {str(e)}")
             return frame
