@@ -1,7 +1,16 @@
+# YOLOv8 và xử lý hình ảnh
 ultralytics>=8.0.0
 opencv-python>=4.8.0
 Pillow>=10.0.0
 numpy>=1.24.0
+
+# PyTorch
 torch>=2.0.0
 torchvision>=0.15.0
+
+# Text-to-Speech (Phát âm tiếng Việt)
+gTTS>=2.3.0
+
+# Phát âm thanh
+pygame>=2.5.0
 

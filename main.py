@@ -62,6 +62,7 @@ class TrafficSignDetectionApp:
         self.current_frame = None
         self.detected_history = []
         self.current_playing_audio = None  # Lưu trữ luồng âm thanh đang phát
+        self.video_speed = 1.0  # Tốc độ video (1.0 = bình thường, 2.0 = x2, 0.5 = x0.5)
         
         # Cơ chế ổn định kết quả (stabilization) - đã tối ưu
         self.detection_buffer = defaultdict(list)
@@ -151,7 +152,7 @@ class TrafficSignDetectionApp:
     def load_model(self):
         """Tải mô hình YOLO"""
         try:
-            self.model = YOLO('model/bestv1.pt')
+            self.model = YOLO('model/best.pt')
             print("Đã tải mô hình YOLO thành công!")
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể tải mô hình YOLO: {str(e)}")
@@ -309,6 +310,27 @@ class TrafficSignDetectionApp:
                                           width=18)
         self.btn_toggle_sound.pack(side=tk.LEFT, padx=10)
         
+        # Frame tốc độ video
+        speed_frame = tk.Frame(button_frame, bg=self.colors['bg_card'])
+        speed_frame.pack(side=tk.LEFT, padx=10)
+        
+        speed_label = tk.Label(speed_frame,
+                              text="⚡ Tốc độ:",
+                              font=('Segoe UI', 10, 'bold'),
+                              bg=self.colors['bg_card'],
+                              fg=self.colors['text'])
+        speed_label.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.speed_var = tk.StringVar(value="1.0x")
+        self.speed_combo = ttk.Combobox(speed_frame,
+                                       textvariable=self.speed_var,
+                                       values=["0.25x", "0.5x", "0.75x", "1.0x", "1.5x", "2.0x", "3.0x"],
+                                       state='readonly',
+                                       width=8,
+                                       font=('Segoe UI', 10))
+        self.speed_combo.pack(side=tk.LEFT)
+        self.speed_combo.bind('<<ComboboxSelected>>', self.change_video_speed)
+        
         # Frame hiển thị video với card style
         video_card = tk.Frame(main_frame, bg=self.colors['bg_card'], relief=tk.FLAT, bd=0)
         video_card.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
@@ -414,8 +436,18 @@ class TrafficSignDetectionApp:
     
     def select_video(self):
         """Chọn file video"""
+        # Dừng video cũ nếu đang chạy
+        if self.is_video_active:
+            self.is_video_active = False
+            self.is_paused = False
+            self.btn_pause.config(state='disabled', text="⏸ Pause")
+            if self.cap:
+                self.cap.release()
+                self.cap = None
+        
+        # Dừng camera nếu đang chạy
         if self.is_camera_active:
-            self.stop_all()
+            self.stop_camera()
         
         file_path = filedialog.askopenfilename(
             title="Chọn file video",
@@ -426,9 +458,8 @@ class TrafficSignDetectionApp:
         )
         
         if file_path:
-            self.detected_history.clear()
-            self.detection_buffer.clear()
-            self.update_detection_log()
+            # Xóa sạch tất cả dữ liệu cũ
+            self.clear_all_data()
             
             self.video_path = file_path
             self.is_video_active = True
@@ -491,13 +522,42 @@ class TrafficSignDetectionApp:
                 except:
                     break
     
+    def change_video_speed(self, event=None):
+        """Thay đổi tốc độ video"""
+        speed_text = self.speed_var.get()
+        self.video_speed = float(speed_text.replace('x', ''))
+        if self.is_video_active or self.is_camera_active:
+            status_text = f"Trạng thái: Tốc độ video {speed_text}"
+            self.status_label.config(text=status_text, fg=self.colors['primary'])
+    
+    def clear_all_data(self):
+        """Xóa sạch tất cả dữ liệu và widget"""
+        # Xóa lịch sử phát hiện
+        self.detected_history.clear()
+        self.detection_buffer.clear()
+        self.sign_popup_text.clear()
+        
+        # Xóa tất cả widget ảnh biển báo
+        for label, data in list(self.sign_images.items()):
+            if 'widget' in data and data['widget']:
+                try:
+                    data['widget'].destroy()
+                except:
+                    pass
+        self.sign_images.clear()
+        
+        # Cập nhật log
+        self.update_detection_log()
+    
     def start_camera(self):
         """Bắt đầu sử dụng camera"""
         if self.is_video_active:
-            self.stop_all()
+            self.is_video_active = False
+            self.is_paused = False
+            self.btn_pause.config(state='disabled', text="⏸ Pause")
         
-        self.detection_buffer.clear()
-        self.detected_history.clear()
+        # Xóa sạch dữ liệu cũ
+        self.clear_all_data()
         
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
@@ -521,22 +581,40 @@ class TrafficSignDetectionApp:
         self.status_label.config(text="Trạng thái: Đã dừng camera", 
                                fg=self.colors['text_secondary'])
         self.status_indicator.config(fg=self.colors['text_secondary'])
+        
+        # Xóa sạch tất cả dữ liệu
+        self.clear_all_data()
+        
+        # Reset màn hình về đen
         self.video_label.config(image='', 
                                text="Chưa có video\n\nChọn video hoặc bật camera để bắt đầu",
-                               fg=self.colors['text_secondary'])
-        self.detected_history.clear()
-        self.detection_buffer.clear()
-        self.sign_images.clear()
-        self.sign_popup_text.clear()
-        self.update_detection_log()
-        self.update_sign_images_display()
+                               fg=self.colors['text_secondary'],
+                               bg="#000000")
     
     def stop_all(self):
         """Dừng tất cả"""
+        # Dừng video
         self.is_video_active = False
         self.is_paused = False
         self.btn_pause.config(state='disabled', text="⏸ Pause")
-        self.stop_camera()
+        
+        # Dừng camera
+        if self.is_camera_active:
+            self.is_camera_active = False
+            if self.cap:
+                self.cap.release()
+                self.cap = None
+            self.btn_camera.config(text="📷 Bật Camera")
+        
+        # Xóa sạch tất cả dữ liệu
+        self.clear_all_data()
+        
+        # Reset màn hình về đen
+        self.video_label.config(image='', 
+                               text="Chưa có video\n\nChọn video hoặc bật camera để bắt đầu",
+                               fg=self.colors['text_secondary'],
+                               bg="#000000")
+        
         self.status_label.config(text="Trạng thái: Đã dừng", 
                                fg=self.colors['text_secondary'])
         self.status_indicator.config(fg=self.colors['text_secondary'])
@@ -555,7 +633,7 @@ class TrafficSignDetectionApp:
                 return
             
             fps = int(cap.get(cv2.CAP_PROP_FPS))
-            delay = int(1000 / fps) if fps > 0 else 30
+            delay = 1.0 / fps if fps > 0 else 0.033  # delay tính bằng giây
             
             while self.is_video_active:
                 if not self.is_paused:
@@ -565,9 +643,12 @@ class TrafficSignDetectionApp:
                     
                     frame = self.detect_traffic_signs(frame)
                     self.display_frame(frame)
-                    cv2.waitKey(delay)
+                    
+                    # Điều chỉnh delay theo tốc độ video
+                    adjusted_delay = delay / self.video_speed
+                    time.sleep(max(0.001, adjusted_delay))
                 else:
-                    cv2.waitKey(100)
+                    time.sleep(0.1)
             
             cap.release()
             self.is_video_active = False
@@ -670,14 +751,18 @@ class TrafficSignDetectionApp:
                     img_label.image = photo
                     img_label.pack()
                     
-                    classesVie = self.read_classes_file('classes_vie.txt')
-                    if classesVie and int(label) < len(classesVie):
-                        name_vie = classesVie[int(label)]
-                    else:
-                        name_vie = label
+                    # Lấy mã ký tự từ file label (ví dụ: R415_xxxxxxx -> R415)
+                    display_text = label
+                    if self.class_labels and int(label) < len(self.class_labels):
+                        label_code = self.class_labels[int(label)]
+                        # Lấy cụm ký tự trước dấu _ đầu tiên
+                        if '_' in label_code:
+                            display_text = label_code.split('_')[0]
+                        else:
+                            display_text = label_code
                     
                     name_label = tk.Label(img_frame, 
-                                        text=label,
+                                        text=display_text,
                                         bg="#1a1a1a",
                                         fg="#00ff00",
                                         font=('Courier New', 8, 'bold'))
@@ -743,7 +828,8 @@ class TrafficSignDetectionApp:
         y_offset = 130
         
         frame_h, frame_w = pil_img.size[1], pil_img.size[0]
-        dynamic_font_size = max(30, min(80, int(frame_w * 0.04)))
+        # Tính toán kích thước chữ động dựa trên chiều rộng video
+        dynamic_font_size = max(40, min(100, int(frame_w * 0.06)))
         
         try:
             font = ImageFont.truetype("arial.ttf", dynamic_font_size)
@@ -751,7 +837,10 @@ class TrafficSignDetectionApp:
             try:
                 font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", dynamic_font_size)
             except:
-                font = ImageFont.load_default()
+                try:
+                    font = ImageFont.truetype("C:\\Windows\\Fonts\\arialbd.ttf", dynamic_font_size)
+                except:
+                    font = ImageFont.load_default()
         
         for label, data in self.sign_popup_text.items():
             if current_time - data['first_stable'] < self.capture_delay:
@@ -772,18 +861,18 @@ class TrafficSignDetectionApp:
             x = (frame_w - text_width) // 2
             y = y_offset
             
-            padding = 20
+            padding = 25
             draw.rectangle(
                 [(x - padding, y - padding),
                  (x + text_width + padding, y + text_height + padding)],
                 fill=bg_color,
                 outline=(255, 255, 255),
-                width=4
+                width=6
             )
             
             draw.text((x, y), text, font=font, fill=(255, 255, 255))
             
-            y_offset += text_height + 2 * padding + 15
+            y_offset += text_height + 2 * padding + 20
         
         for label in labels_to_remove:
             del self.sign_popup_text[label]
@@ -796,8 +885,8 @@ class TrafficSignDetectionApp:
         if self.model is None:
             return frame
         try:
-            # Giảm confidence threshold xuống 0.2 để phát hiện nhiều hơn
-            results = self.model(frame, conf=0.2, verbose=False)
+            # Tăng confidence threshold lên 0.4 để chỉ phát hiện biển báo có độ tin cậy cao
+            results = self.model(frame, conf=0.7, verbose=False)
             detections = results[0].boxes
             annotated = frame.copy()
             
@@ -824,8 +913,15 @@ class TrafficSignDetectionApp:
                         # Cắt ảnh biển báo
                         cropped_img = self.crop_sign_image(frame, (x1, y1, x2, y2))
                         
+                        # Lấy tên tiếng Việt
+                        classesVie = self.read_classes_file('classes_vie.txt')
+                        if classesVie and int(label) < len(classesVie):
+                            name_vie = classesVie[int(label)]
+                        else:
+                            name_vie = label
+                        
                         if label not in self.detected_history:
-                            # Lần đầu phát hiện
+                            # Lần đầu phát hiện - thêm vào lịch sử
                             self.detected_history.insert(0, label)
                             
                             if cropped_img is not None:
@@ -833,15 +929,9 @@ class TrafficSignDetectionApp:
                                     'image': cropped_img,
                                     'first_stable': current_time,
                                     'last_seen': current_time,
-                                    'last_captured': current_time,  # Lưu thời gian chụp lần cuối
+                                    'last_captured': current_time,
                                     'widget': None
                                 }
-                            
-                            classesVie = self.read_classes_file('classes_vie.txt')
-                            if classesVie and int(label) < len(classesVie):
-                                name_vie = classesVie[int(label)]
-                            else:
-                                name_vie = label
                             
                             self.sign_popup_text[label] = {
                                 'text': name_vie,
@@ -851,11 +941,11 @@ class TrafficSignDetectionApp:
                             
                             self.speak_text(f"Phát hiện {name_vie}")
                         else:
-                            # Phát hiện lại - kiểm tra xem đã đủ 5s chưa
+                            # Phát hiện lại - LUÔN cập nhật để hiển thị
                             if label in self.sign_images:
                                 time_since_last_capture = current_time - self.sign_images[label].get('last_captured', 0)
                                 
-                                # Chỉ chụp lại nếu đã qua 5 giây
+                                # Chỉ chụp lại ảnh nếu đã qua 5 giây
                                 if time_since_last_capture >= self.recapture_interval:
                                     if cropped_img is not None:
                                         # Hủy widget cũ
@@ -870,16 +960,33 @@ class TrafficSignDetectionApp:
                                             'image': cropped_img,
                                             'first_stable': self.sign_images[label]['first_stable'],
                                             'last_seen': current_time,
-                                            'last_captured': current_time,  # Cập nhật thời gian chụp mới
+                                            'last_captured': current_time,
                                             'widget': None
                                         }
                                 else:
                                     # Chưa đủ 5s, chỉ cập nhật last_seen
                                     self.sign_images[label]['last_seen'] = current_time
+                            else:
+                                # Trường hợp ảnh bị mất khỏi dictionary, tạo lại
+                                if cropped_img is not None:
+                                    self.sign_images[label] = {
+                                        'image': cropped_img,
+                                        'first_stable': current_time,
+                                        'last_seen': current_time,
+                                        'last_captured': current_time,
+                                        'widget': None
+                                    }
                             
-                            # Cập nhật popup text
+                            # LUÔN cập nhật popup text để tiếp tục hiển thị
                             if label in self.sign_popup_text:
                                 self.sign_popup_text[label]['last_seen'] = current_time
+                            else:
+                                # Tạo lại popup text nếu bị mất
+                                self.sign_popup_text[label] = {
+                                    'text': name_vie,
+                                    'first_stable': current_time,
+                                    'last_seen': current_time
+                                }
                         
                         stable_signs.append(label)
                     
