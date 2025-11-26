@@ -2,13 +2,14 @@ import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
 import cv2
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import threading
 from ultralytics import YOLO
 import os
 import unicodedata
 import time
 from collections import defaultdict
+import numpy as np
 
 class TrafficSignDetectionApp:
     def __init__(self, root):
@@ -47,11 +48,18 @@ class TrafficSignDetectionApp:
         
         # Cơ chế ổn định kết quả (stabilization)
         self.detection_buffer = defaultdict(list)  # {label: [timestamps]}
-        self.stable_duration = 0.4  # Thời gian ổn định (giây): 0.3-0.5s
+        self.stable_duration = 0.5  # Thời gian ổn định (giây): 0.3-0.5s
         self.buffer_timeout = 1.0  # Xóa buffer sau 1s không phát hiện
+        
+        # Quản lý hiển thị log và ảnh biển báo
+        self.show_log = True  # Bật/tắt log
+        self.sign_images = {}  # {label: {'image': cropped_img, 'last_seen': timestamp}}
+        self.sign_popup_text = {}  # {label: {'text': name_vie, 'last_seen': timestamp}}
+        self.display_duration = 2.0  # Thời gian hiển thị sau khi mất (2 giây)
         
         # Tải danh sách các lớp từ file classes_vie.txt
         self.class_names_vie = self.read_classes_file('classes_vie.txt')
+        self.class_labels = self.read_classes_file('label.txt')  # Đọc file label
         
         # Tạo giao diện
         self.create_widgets()
@@ -60,7 +68,7 @@ class TrafficSignDetectionApp:
     def load_model(self):
         """Tải mô hình YOLO"""
         try:
-            self.model = YOLO('model/best.pt')
+            self.model = YOLO('model/bestv1.pt')
             print("Đã tải mô hình YOLO thành công!")
         except Exception as e:
             messagebox.showerror("Lỗi", f"Không thể tải mô hình YOLO: {str(e)}")
@@ -202,6 +210,14 @@ class TrafficSignDetectionApp:
                              width=18)
         btn_stop.pack(side=tk.LEFT, padx=10)
         
+        # Nút bật/tắt log
+        self.btn_toggle_log = ttk.Button(button_frame,
+                                        text="📋 Tắt Log",
+                                        command=self.toggle_log,
+                                        style='Primary.TButton',
+                                        width=18)
+        self.btn_toggle_log.pack(side=tk.LEFT, padx=10)
+        
         # Frame hiển thị video với card style
         video_card = tk.Frame(main_frame, bg=self.colors['bg_card'], relief=tk.FLAT, bd=0)
         video_card.pack(fill=tk.BOTH, expand=True, pady=(0, 20))
@@ -229,19 +245,40 @@ class TrafficSignDetectionApp:
                                     justify=tk.CENTER)
         self.video_label.pack(fill=tk.BOTH, expand=True)
         
-        # Panel overlay log biển báo (góc trái, không biến mất)
+        # Panel hiển thị ảnh biển báo đã nhận diện (góc trên trái)
+        self.sign_images_panel = tk.Frame(video_display_frame,
+                                         bg="#1a1a1a",
+                                         bd=2,
+                                         relief=tk.SOLID)
+        self.sign_images_panel.place(x=10, y=10)
+        
+        # Label tiêu đề cho panel ảnh
+        self.sign_images_title = tk.Label(self.sign_images_panel,
+                                         text="📸 Biển báo đã phát hiện",
+                                         bg="#1a1a1a",
+                                         fg="#00ff00",
+                                         font=('Courier New', 9, 'bold'),
+                                         padx=5, pady=3)
+        self.sign_images_title.pack()
+        
+        # Frame chứa các ảnh biển báo
+        self.sign_images_container = tk.Frame(self.sign_images_panel, bg="#1a1a1a")
+        self.sign_images_container.pack(padx=5, pady=5)
+        
+        # Panel overlay log biển báo (góc dưới trái)
         self.overlay_panel = tk.Label(video_display_frame,
                                       text="Log: Chưa phát hiện",
                                       bg="#1a1a1a",
                                       fg="#00ff00",
                                       font=('Courier New', 9, 'bold'),
                                       justify=tk.LEFT,
-                                      anchor=tk.NW,
+                                      anchor=tk.SW,
                                       padx=10, pady=8,
                                       bd=1,
                                       relief=tk.SOLID,
                                       borderwidth=1)
-        self.overlay_panel.place(x=10, y=10)
+        # Đặt ở góc dưới trái (sẽ cập nhật vị trí động sau)
+        self.overlay_panel.place(x=10, rely=1.0, y=-10, anchor=tk.SW)
         
         # Frame thông tin với card style
         info_card = tk.Frame(main_frame, bg=self.colors['bg_card'], relief=tk.FLAT, bd=0)
@@ -335,6 +372,16 @@ class TrafficSignDetectionApp:
             self.status_label.config(text=f"Trạng thái: Đang xử lý video - {os.path.basename(self.video_path)}", 
                                    fg=self.colors['primary'])
     
+    def toggle_log(self):
+        """Bật/tắt hiển thị log"""
+        self.show_log = not self.show_log
+        if self.show_log:
+            self.btn_toggle_log.config(text="📋 Tắt Log")
+            self.overlay_panel.place(x=10, rely=1.0, y=-10, anchor=tk.SW)
+        else:
+            self.btn_toggle_log.config(text="📋 Bật Log")
+            self.overlay_panel.place_forget()
+    
     def start_camera(self):
         """Bắt đầu sử dụng camera"""
         if self.is_video_active:
@@ -371,7 +418,10 @@ class TrafficSignDetectionApp:
                                fg=self.colors['text_secondary'])
         self.detected_history.clear()
         self.detection_buffer.clear()
-        self.overlay_panel.config(text="Log: Chưa phát hiện")
+        self.sign_images.clear()
+        self.sign_popup_text.clear()
+        self.update_detection_log()
+        self.update_sign_images_display()
     
     def stop_all(self):
         """Dừng tất cả"""
@@ -490,6 +540,179 @@ class TrafficSignDetectionApp:
         """Thêm detection vào buffer với timestamp hiện tại"""
         current_time = time.time()
         self.detection_buffer[label].append(current_time)
+    
+    def update_sign_images_display(self):
+        """Cập nhật hiển thị các ảnh biển báo đã phát hiện"""
+        # Xóa tất cả widget con hiện tại
+        for widget in self.sign_images_container.winfo_children():
+            widget.destroy()
+        
+        current_time = time.time()
+        labels_to_remove = []
+        
+        # Hiển thị các ảnh biển báo
+        for label, data in self.sign_images.items():
+            # Kiểm tra nếu quá 2s kể từ lần cuối nhìn thấy
+            if current_time - data['last_seen'] > self.display_duration:
+                labels_to_remove.append(label)
+                continue
+            
+            try:
+                # Tạo frame cho mỗi ảnh
+                img_frame = tk.Frame(self.sign_images_container, bg="#1a1a1a", bd=1, relief=tk.SOLID)
+                img_frame.pack(side=tk.LEFT, padx=3, pady=3)
+                
+                # Chuyển đổi ảnh OpenCV sang PIL
+                img_rgb = cv2.cvtColor(data['image'], cv2.COLOR_BGR2RGB)
+                img_pil = Image.fromarray(img_rgb)
+                
+                # Resize ảnh nhỏ lại
+                max_size = 80
+                img_pil.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                
+                # Chuyển sang PhotoImage
+                photo = ImageTk.PhotoImage(img_pil)
+                
+                # Label hiển thị ảnh
+                img_label = tk.Label(img_frame, image=photo, bg="#1a1a1a")
+                img_label.image = photo  # Giữ reference
+                img_label.pack()
+                
+                # Label tên biển báo
+                classesVie = self.read_classes_file('classes_vie.txt')
+                if classesVie and int(label) < len(classesVie):
+                    name_vie = classesVie[int(label)]
+                else:
+                    name_vie = label
+                
+                name_label = tk.Label(img_frame, 
+                                    text=label,
+                                    bg="#1a1a1a",
+                                    fg="#00ff00",
+                                    font=('Courier New', 8, 'bold'))
+                name_label.pack()
+            except Exception as e:
+                print(f"Lỗi hiển thị ảnh biển báo {label}: {e}")
+        
+        # Xóa các ảnh đã hết thời gian hiển thị
+        for label in labels_to_remove:
+            del self.sign_images[label]
+    
+    def crop_sign_image(self, frame, box):
+        """Cắt ảnh biển báo từ frame"""
+        try:
+            x1, y1, x2, y2 = box
+            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+            
+            # Đảm bảo tọa độ trong phạm vi frame
+            h, w = frame.shape[:2]
+            x1 = max(0, x1)
+            y1 = max(0, y1)
+            x2 = min(w, x2)
+            y2 = min(h, y2)
+            
+            # Cắt ảnh
+            cropped = frame[y1:y2, x1:x2].copy()
+            return cropped
+        except Exception as e:
+            print(f"Lỗi khi cắt ảnh: {e}")
+            return None
+    
+    def get_sign_color(self, label_index):
+        """
+        Lấy màu theo loại biển báo dựa trên ký tự đầu tiên của label
+        P: Red (Prohibitory - Cấm)
+        W: Orange (Warning - Cảnh báo)
+        R: Light Blue (Regulatory - Chỉ dẫn)
+        I: Blue (Information - Thông tin)
+        """
+        try:
+            if self.class_labels and int(label_index) < len(self.class_labels):
+                label_code = self.class_labels[int(label_index)]
+                first_char = label_code[0].upper()
+                
+                if first_char == 'P':
+                    return (220, 20, 60)  # Red - Crimson
+                elif first_char == 'W':
+                    return (255, 140, 0)  # Orange
+                elif first_char == 'R':
+                    return (135, 206, 250)  # Light Blue
+                elif first_char == 'I':
+                    return (30, 144, 255)  # Dodger Blue
+                else:
+                    return (0, 200, 0)  # Default Green
+            else:
+                return (0, 200, 0)  # Default Green
+        except:
+            return (0, 200, 0)  # Default Green
+    
+    def draw_popup_notifications(self, frame):
+        """Vẽ popup thông báo tên biển báo trên video với hỗ trợ font tiếng Việt"""
+        current_time = time.time()
+        labels_to_remove = []
+        
+        # Chuyển frame sang PIL Image để vẽ text tiếng Việt
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(frame_rgb)
+        draw = ImageDraw.Draw(pil_img)
+        
+        # Vị trí bắt đầu vẽ popup (từ trên xuống, dời xuống 10px)
+        y_offset = 110
+        
+        # Thử tải font tiếng Việt, nếu không có dùng font mặc định (tăng size lên)
+        try:
+            # Thử các font phổ biến hỗ trợ tiếng Việt trên Windows (size 50)
+            font = ImageFont.truetype("arial.ttf", 50)
+        except:
+            try:
+                font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 50)
+            except:
+                font = ImageFont.load_default()
+        
+        for label, data in self.sign_popup_text.items():
+            # Kiểm tra nếu quá 2s
+            if current_time - data['last_seen'] > self.display_duration:
+                labels_to_remove.append(label)
+                continue
+            
+            # Text hiển thị
+            text = f"🚦 {data['text']}"
+            
+            # Lấy màu theo loại biển báo
+            bg_color = self.get_sign_color(label)
+            
+            # Tính kích thước text
+            bbox = draw.textbbox((0, 0), text, font=font)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            
+            # Vị trí hiển thị (giữa màn hình, từ trên xuống)
+            frame_h, frame_w = pil_img.size[1], pil_img.size[0]
+            x = (frame_w - text_width) // 2
+            y = y_offset
+            
+            # Vẽ nền cho text với màu theo loại biển báo
+            padding = 20
+            draw.rectangle(
+                [(x - padding, y - padding),
+                 (x + text_width + padding, y + text_height + padding)],
+                fill=bg_color,
+                outline=(255, 255, 255),
+                width=4
+            )
+            
+            # Vẽ text
+            draw.text((x, y), text, font=font, fill=(255, 255, 255))
+            
+            y_offset += text_height + 2 * padding + 15
+        
+        # Xóa các popup đã hết thời gian
+        for label in labels_to_remove:
+            del self.sign_popup_text[label]
+        
+        # Chuyển PIL Image về OpenCV format
+        frame_result = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        return frame_result
 
     def detect_traffic_signs(self, frame):
         """Nhận diện biển báo với cơ chế ổn định kết quả"""
@@ -527,6 +750,33 @@ class TrafficSignDetectionApp:
                     if is_stable:
                         if label not in self.detected_history:
                             self.detected_history.insert(0, label)
+                            
+                            # Cắt và lưu ảnh biển báo
+                            cropped_img = self.crop_sign_image(frame, (x1, y1, x2, y2))
+                            if cropped_img is not None:
+                                self.sign_images[label] = {
+                                    'image': cropped_img,
+                                    'last_seen': current_time
+                                }
+                            
+                            # Thêm popup text
+                            classesVie = self.read_classes_file('classes_vie.txt')
+                            if classesVie and int(label) < len(classesVie):
+                                name_vie = classesVie[int(label)]
+                            else:
+                                name_vie = label
+                            
+                            self.sign_popup_text[label] = {
+                                'text': name_vie,
+                                'last_seen': current_time
+                            }
+                        else:
+                            # Cập nhật thời gian last_seen
+                            if label in self.sign_images:
+                                self.sign_images[label]['last_seen'] = current_time
+                            if label in self.sign_popup_text:
+                                self.sign_popup_text[label]['last_seen'] = current_time
+                        
                         stable_signs.append(label)
                     
                     # Vẽ bounding box (màu khác nhau cho stable/unstable)
@@ -568,6 +818,12 @@ class TrafficSignDetectionApp:
             
             for label in labels_to_remove:
                 del self.detection_buffer[label]
+            
+            # Vẽ popup thông báo
+            annotated = self.draw_popup_notifications(annotated)
+            
+            # Cập nhật hiển thị ảnh biển báo
+            self.update_sign_images_display()
             
             return annotated
         except Exception as e:
