@@ -50,6 +50,8 @@ class TrafficSignDetectionApp:
         self.current_frame = None
         self.detected_history = []
         self.current_playing_audio = None  # Lưu trữ luồng âm thanh đang phát
+        self.audio_lock = threading.Lock()  # Lock để tránh phát nhiều âm thanh cùng lúc
+        self.is_speaking = False  # Flag kiểm tra đang phát âm
         
         # Cơ chế ổn định kết quả (stabilization)
         self.detection_buffer = defaultdict(list)
@@ -72,19 +74,39 @@ class TrafficSignDetectionApp:
         self.setup_styles()
     
     def speak_text(self, text):
-        """Phát âm thanh text tiếng Việt bằng Google TTS (MP3)"""
+        """Phát âm thanh text tiếng Việt bằng Google TTS (MP3) - Chỉ phát 1 âm thanh tại 1 thời điểm"""
+        # Nếu đang phát âm thanh khác, bỏ qua
+        if self.is_speaking:
+            return
+        
         def tts_thread():
-            try:
-                tts = gTTS(text=text, lang='vi', slow=False)
-                temp_file = "temp_audio.mp3"
-                tts.save(temp_file)
-                playsound(temp_file)  # phát (blocking bên trong thread)
+            with self.audio_lock:
+                self.is_speaking = True
+                temp_file = None
                 try:
-                    os.remove(temp_file)
-                except:
-                    pass
-            except Exception as e:
-                print(f"Lỗi khi phát âm: {e}")
+                    # Tạo tên file unique với timestamp
+                    import uuid
+                    temp_file = f"temp_audio_{uuid.uuid4().hex[:8]}.mp3"
+                    
+                    # Tạo TTS và lưu file
+                    tts = gTTS(text=text, lang='vi', slow=False)
+                    tts.save(temp_file)
+                    
+                    # Phát âm thanh
+                    playsound(temp_file)
+                    
+                except Exception as e:
+                    print(f"Lỗi khi phát âm: {e}")
+                finally:
+                    # Dọn dẹp file tạm
+                    if temp_file and os.path.exists(temp_file):
+                        try:
+                            time.sleep(0.1)  # Chờ một chút trước khi xóa
+                            os.remove(temp_file)
+                        except Exception as e:
+                            print(f"Không thể xóa file tạm {temp_file}: {e}")
+                    
+                    self.is_speaking = False
 
         thread = threading.Thread(target=tts_thread, daemon=True)
         thread.start()
