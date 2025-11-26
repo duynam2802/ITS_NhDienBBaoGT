@@ -12,8 +12,8 @@ from collections import defaultdict
 import numpy as np
 from gtts import gTTS
 import io
-# import simpleaudio as sa
-from playsound import playsound
+import pygame
+from queue import Queue
 
 class TrafficSignDetectionApp:
     def __init__(self, root):
@@ -37,6 +37,18 @@ class TrafficSignDetectionApp:
             'border': '#4a4a6a'
         }
         
+        # Khởi tạo pygame mixer cho âm thanh
+        try:
+            pygame.mixer.init()
+        except:
+            print("Không thể khởi tạo pygame mixer")
+        
+        # Hàng đợi phát âm để đọc tuần tự
+        self.speech_queue = Queue()
+        self.is_speaking = False
+        self.speech_worker_thread = threading.Thread(target=self.speech_worker, daemon=True)
+        self.speech_worker_thread.start()
+        
         # Khởi tạo YOLO model
         self.model = None
         self.load_model()
@@ -51,17 +63,20 @@ class TrafficSignDetectionApp:
         self.detected_history = []
         self.current_playing_audio = None  # Lưu trữ luồng âm thanh đang phát
         
-        # Cơ chế ổn định kết quả (stabilization)
+        # Cơ chế ổn định kết quả (stabilization) - đã tối ưu
         self.detection_buffer = defaultdict(list)
-        self.stable_duration = 0.5
-        self.buffer_timeout = 2.0
+        self.stable_duration = 0.7
+        self.buffer_timeout = 5.0  # Tăng lên 3s để giữ lịch sử lâu hơn
+        self.min_detections = 2  # Cần ít nhất 2 lần phát hiện để xác nhận
         
         # Quản lý hiển thị log và ảnh biển báo
         self.show_log = True
+        self.enable_sound = True  # Bật/tắt âm thanh
         self.sign_images = {}
         self.sign_popup_text = {}
-        self.display_duration = 2.0
-        self.capture_delay = 2.0
+        self.display_duration = 3.0  # Tăng lên 3s để hiển thị lâu hơn
+        self.capture_delay = 0.5  # Giảm xuống 0.5s để hiển thị nhanh hơn
+        self.recapture_interval = 5.0  # Chụp lại sau mỗi 5 giây
         
         # Tải danh sách các lớp từ file classes_vie.txt
         self.class_names_vie = self.read_classes_file('classes_vie.txt')
@@ -72,22 +87,66 @@ class TrafficSignDetectionApp:
         self.setup_styles()
     
     def speak_text(self, text):
-        """Phát âm thanh text tiếng Việt bằng Google TTS (MP3)"""
-        def tts_thread():
+        """Thêm text vào hàng đợi để phát âm tuần tự"""
+        if self.enable_sound:
+            self.speech_queue.put(text)
+    
+    def speech_worker(self):
+        """Worker thread xử lý hàng đợi phát âm - đọc từng cái một"""
+        while True:
             try:
-                tts = gTTS(text=text, lang='vi', slow=False)
-                temp_file = "temp_audio.mp3"
-                tts.save(temp_file)
-                playsound(temp_file)  # phát (blocking bên trong thread)
+                # Lấy text từ queue (blocking cho đến khi có)
+                text = self.speech_queue.get()
+                
+                # Kiểm tra xem âm thanh có bật không
+                if not self.enable_sound:
+                    self.speech_queue.task_done()
+                    continue
+                
+                self.is_speaking = True
+                temp_file = None
+                
                 try:
-                    os.remove(temp_file)
-                except:
-                    pass
+                    # Tạo file âm thanh
+                    tts = gTTS(text=text, lang='vi', slow=False)
+                    temp_file = f"temp_audio_{int(time.time()*1000)}.mp3"
+                    tts.save(temp_file)
+                    
+                    # Phát âm thanh
+                    pygame.mixer.music.load(temp_file)
+                    pygame.mixer.music.play()
+                    
+                    # Đợi phát xong - kiểm tra enable_sound liên tục
+                    while pygame.mixer.music.get_busy():
+                        if not self.enable_sound:
+                            # Nếu tắt âm thanh giữa chừng, dừng ngay
+                            pygame.mixer.music.stop()
+                            break
+                        pygame.time.Clock().tick(10)
+                    
+                    # Đợi một chút để đảm bảo phát xong
+                    if self.enable_sound:
+                        time.sleep(0.2)
+                    
+                except Exception as e:
+                    print(f"Lỗi khi phát âm: {e}")
+                finally:
+                    # Xóa file tạm
+                    if temp_file and os.path.exists(temp_file):
+                        try:
+                            pygame.mixer.music.unload()
+                            time.sleep(0.1)
+                            os.remove(temp_file)
+                        except Exception as e:
+                            print(f"Không thể xóa file tạm: {e}")
+                    
+                    self.is_speaking = False
+                    # Đánh dấu task hoàn thành
+                    self.speech_queue.task_done()
+                    
             except Exception as e:
-                print(f"Lỗi khi phát âm: {e}")
-
-        thread = threading.Thread(target=tts_thread, daemon=True)
-        thread.start()
+                print(f"Lỗi trong speech worker: {e}")
+                self.is_speaking = False
         
     def load_model(self):
         """Tải mô hình YOLO"""
@@ -241,6 +300,14 @@ class TrafficSignDetectionApp:
                                         style='Primary.TButton',
                                         width=18)
         self.btn_toggle_log.pack(side=tk.LEFT, padx=10)
+        
+        # Nút bật/tắt âm thanh
+        self.btn_toggle_sound = ttk.Button(button_frame,
+                                          text="🔊 Tắt Âm thanh",
+                                          command=self.toggle_sound,
+                                          style='Primary.TButton',
+                                          width=18)
+        self.btn_toggle_sound.pack(side=tk.LEFT, padx=10)
         
         # Frame hiển thị video với card style
         video_card = tk.Frame(main_frame, bg=self.colors['bg_card'], relief=tk.FLAT, bd=0)
@@ -404,6 +471,26 @@ class TrafficSignDetectionApp:
             self.btn_toggle_log.config(text="📋 Bật Log")
             self.overlay_panel.place_forget()
     
+    def toggle_sound(self):
+        """Bật/tắt âm thanh"""
+        self.enable_sound = not self.enable_sound
+        if self.enable_sound:
+            self.btn_toggle_sound.config(text="🔊 Tắt Âm thanh")
+        else:
+            self.btn_toggle_sound.config(text="🔇 Bật Âm thanh")
+            # Dừng âm thanh đang phát ngay lập tức
+            try:
+                pygame.mixer.music.stop()
+            except:
+                pass
+            # Xóa toàn bộ queue để không phát nữa
+            while not self.speech_queue.empty():
+                try:
+                    self.speech_queue.get_nowait()
+                    self.speech_queue.task_done()
+                except:
+                    break
+    
     def start_camera(self):
         """Bắt đầu sử dụng camera"""
         if self.is_video_active:
@@ -530,16 +617,19 @@ class TrafficSignDetectionApp:
         self.overlay_panel.config(text=log_text)
     
     def is_detection_stable(self, label):
-        """Kiểm tra xem detection có ổn định hay không"""
+        """Kiểm tra xem detection có ổn định hay không - đã cải tiến"""
         current_time = time.time()
         timestamps = self.detection_buffer[label]
         
+        # Lọc bỏ timestamp quá cũ
         timestamps = [t for t in timestamps if current_time - t < self.buffer_timeout]
         self.detection_buffer[label] = timestamps
         
-        if not timestamps:
+        # Kiểm tra có đủ số lần phát hiện tối thiểu không
+        if len(timestamps) < self.min_detections:
             return False
         
+        # Kiểm tra khoảng thời gian từ lần phát hiện đầu tiên
         time_span = current_time - timestamps[0]
         return time_span >= self.stable_duration
     
@@ -702,11 +792,12 @@ class TrafficSignDetectionApp:
         return frame_result
 
     def detect_traffic_signs(self, frame):
-        """Nhận diện biển báo"""
+        """Nhận diện biển báo - đã tối ưu"""
         if self.model is None:
             return frame
         try:
-            results = self.model(frame, conf=0.25, verbose=False)
+            # Giảm confidence threshold xuống 0.2 để phát hiện nhiều hơn
+            results = self.model(frame, conf=0.2, verbose=False)
             detections = results[0].boxes
             annotated = frame.copy()
             
@@ -730,15 +821,19 @@ class TrafficSignDetectionApp:
                     is_stable = self.is_detection_stable(label)
                     
                     if is_stable:
+                        # Cắt ảnh biển báo
+                        cropped_img = self.crop_sign_image(frame, (x1, y1, x2, y2))
+                        
                         if label not in self.detected_history:
+                            # Lần đầu phát hiện
                             self.detected_history.insert(0, label)
                             
-                            cropped_img = self.crop_sign_image(frame, (x1, y1, x2, y2))
                             if cropped_img is not None:
                                 self.sign_images[label] = {
                                     'image': cropped_img,
                                     'first_stable': current_time,
                                     'last_seen': current_time,
+                                    'last_captured': current_time,  # Lưu thời gian chụp lần cuối
                                     'widget': None
                                 }
                             
@@ -756,8 +851,33 @@ class TrafficSignDetectionApp:
                             
                             self.speak_text(f"Phát hiện {name_vie}")
                         else:
+                            # Phát hiện lại - kiểm tra xem đã đủ 5s chưa
                             if label in self.sign_images:
-                                self.sign_images[label]['last_seen'] = current_time
+                                time_since_last_capture = current_time - self.sign_images[label].get('last_captured', 0)
+                                
+                                # Chỉ chụp lại nếu đã qua 5 giây
+                                if time_since_last_capture >= self.recapture_interval:
+                                    if cropped_img is not None:
+                                        # Hủy widget cũ
+                                        if 'widget' in self.sign_images[label] and self.sign_images[label]['widget']:
+                                            try:
+                                                self.sign_images[label]['widget'].destroy()
+                                            except:
+                                                pass
+                                        
+                                        # Cập nhật ảnh mới
+                                        self.sign_images[label] = {
+                                            'image': cropped_img,
+                                            'first_stable': self.sign_images[label]['first_stable'],
+                                            'last_seen': current_time,
+                                            'last_captured': current_time,  # Cập nhật thời gian chụp mới
+                                            'widget': None
+                                        }
+                                else:
+                                    # Chưa đủ 5s, chỉ cập nhật last_seen
+                                    self.sign_images[label]['last_seen'] = current_time
+                            
+                            # Cập nhật popup text
                             if label in self.sign_popup_text:
                                 self.sign_popup_text[label]['last_seen'] = current_time
                         
