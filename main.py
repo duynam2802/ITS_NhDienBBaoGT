@@ -10,6 +10,10 @@ import unicodedata
 import time
 from collections import defaultdict
 import numpy as np
+from gtts import gTTS
+import io
+# import simpleaudio as sa
+from playsound import playsound
 
 class TrafficSignDetectionApp:
     def __init__(self, root):
@@ -44,27 +48,46 @@ class TrafficSignDetectionApp:
         self.cap = None
         self.video_path = None
         self.current_frame = None
-        self.detected_history = []  # Lưu lịch sử các biển báo (list để giữ thứ tự)
+        self.detected_history = []
+        self.current_playing_audio = None  # Lưu trữ luồng âm thanh đang phát
         
         # Cơ chế ổn định kết quả (stabilization)
-        self.detection_buffer = defaultdict(list)  # {label: [timestamps]}
-        self.stable_duration = 0.5  # Thời gian ổn định để xác nhận detection (0.5 giây)
-        self.buffer_timeout = 2.0  # Xóa buffer sau 2s không phát hiện
+        self.detection_buffer = defaultdict(list)
+        self.stable_duration = 0.5
+        self.buffer_timeout = 2.0
         
         # Quản lý hiển thị log và ảnh biển báo
-        self.show_log = True  # Bật/tắt log
-        self.sign_images = {}  # {label: {'image': cropped_img, 'first_stable': timestamp, 'last_seen': timestamp, 'widget': frame_widget}}
-        self.sign_popup_text = {}  # {label: {'text': name_vie, 'first_stable': timestamp, 'last_seen': timestamp}}
-        self.display_duration = 2.0  # Thời gian hiển thị sau khi mất (2 giây)
-        self.capture_delay = 2.0  # Thời gian chờ trước khi hiển thị ảnh/popup (2 giây từ lúc ổn định)
+        self.show_log = True
+        self.sign_images = {}
+        self.sign_popup_text = {}
+        self.display_duration = 2.0
+        self.capture_delay = 2.0
         
         # Tải danh sách các lớp từ file classes_vie.txt
         self.class_names_vie = self.read_classes_file('classes_vie.txt')
-        self.class_labels = self.read_classes_file('label.txt')  # Đọc file label
+        self.class_labels = self.read_classes_file('label.txt')
         
         # Tạo giao diện
         self.create_widgets()
         self.setup_styles()
+    
+    def speak_text(self, text):
+        """Phát âm thanh text tiếng Việt bằng Google TTS (MP3)"""
+        def tts_thread():
+            try:
+                tts = gTTS(text=text, lang='vi', slow=False)
+                temp_file = "temp_audio.mp3"
+                tts.save(temp_file)
+                playsound(temp_file)  # phát (blocking bên trong thread)
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+            except Exception as e:
+                print(f"Lỗi khi phát âm: {e}")
+
+        thread = threading.Thread(target=tts_thread, daemon=True)
+        thread.start()
         
     def load_model(self):
         """Tải mô hình YOLO"""
@@ -278,7 +301,6 @@ class TrafficSignDetectionApp:
                                       bd=1,
                                       relief=tk.SOLID,
                                       borderwidth=1)
-        # Đặt ở góc dưới trái (sẽ cập nhật vị trí động sau)
         self.overlay_panel.place(x=10, rely=1.0, y=-10, anchor=tk.SW)
         
         # Frame thông tin với card style
@@ -337,7 +359,6 @@ class TrafficSignDetectionApp:
         )
         
         if file_path:
-            # Reset log khi chạy video mới
             self.detected_history.clear()
             self.detection_buffer.clear()
             self.update_detection_log()
@@ -388,7 +409,6 @@ class TrafficSignDetectionApp:
         if self.is_video_active:
             self.stop_all()
         
-        # Reset buffer khi bật camera
         self.detection_buffer.clear()
         self.detected_history.clear()
         
@@ -456,16 +476,10 @@ class TrafficSignDetectionApp:
                     if not ret:
                         break
                     
-                    # Nhận diện biển báo
                     frame = self.detect_traffic_signs(frame)
-                    
-                    # Hiển thị frame
                     self.display_frame(frame)
-                    
-                    # Điều chỉnh tốc độ phát
                     cv2.waitKey(delay)
                 else:
-                    # Khi pause, chỉ đợi một chút
                     cv2.waitKey(100)
             
             cap.release()
@@ -491,10 +505,7 @@ class TrafficSignDetectionApp:
                 if not ret:
                     break
                 
-                # Nhận diện biển báo
                 frame = self.detect_traffic_signs(frame)
-                
-                # Hiển thị frame
                 self.display_frame(frame)
             
             if self.cap:
@@ -504,87 +515,71 @@ class TrafficSignDetectionApp:
         thread.start()
     
     def update_detection_log(self):
-        """Cập nhật log biển báo đã phát hiện (biển mới nhất ở đầu)"""
+        """Cập nhật log biển báo đã phát hiện"""
         classesVie = self.read_classes_file('classes_vie.txt')
         if not self.detected_history:
             log_text = "Log: Chưa phát hiện"
         else:
             log_lines = ["=== LOG BIỂN BÁO ==="]
-            # Hiển thị theo thứ tự ngược (mới nhất ở đầu)
             for sign in self.detected_history:
-                log_lines.append(f"✓ {sign} {classesVie[int(sign)]}")
+                if int(sign) < len(classesVie):
+                    log_lines.append(f"✓ {sign} {classesVie[int(sign)]}")
+                else:
+                    log_lines.append(f"✓ {sign}")
             log_text = "\n".join(log_lines)
         self.overlay_panel.config(text=log_text)
     
     def is_detection_stable(self, label):
-        """
-        Kiểm tra xem một detection có ổn định hay không
-        Chỉ trả về True nếu label được phát hiện liên tục trong stable_duration giây
-        """
+        """Kiểm tra xem detection có ổn định hay không"""
         current_time = time.time()
         timestamps = self.detection_buffer[label]
         
-        # Lọc bỏ các timestamp cũ (ngoài buffer_timeout)
         timestamps = [t for t in timestamps if current_time - t < self.buffer_timeout]
         self.detection_buffer[label] = timestamps
         
         if not timestamps:
             return False
         
-        # Kiểm tra khoảng thời gian từ lần phát hiện đầu đến lần cuối
         time_span = current_time - timestamps[0]
-        
-        # Ổn định nếu: đã phát hiện liên tục >= stable_duration
         return time_span >= self.stable_duration
     
     def add_detection_to_buffer(self, label):
-        """Thêm detection vào buffer với timestamp hiện tại"""
+        """Thêm detection vào buffer"""
         current_time = time.time()
         self.detection_buffer[label].append(current_time)
     
     def update_sign_images_display(self):
-        """Cập nhật hiển thị các ảnh biển báo đã phát hiện - CHỈ VẼ MỘT LẦN"""
+        """Cập nhật hiển thị ảnh biển báo"""
         current_time = time.time()
         labels_to_remove = []
         
-        # Kiểm tra và xóa các ảnh đã hết thời gian
         for label, data in list(self.sign_images.items()):
-            # Kiểm tra nếu quá 2s kể từ lần cuối nhìn thấy
             if current_time - data['last_seen'] > self.display_duration:
-                # Xóa widget nếu có
                 if 'widget' in data and data['widget']:
                     data['widget'].destroy()
                 labels_to_remove.append(label)
                 continue
             
-            # Kiểm tra nếu chưa đủ 2s từ lần đầu ổn định
             if current_time - data['first_stable'] < self.capture_delay:
                 continue
             
-            # Nếu widget chưa được tạo, tạo mới
             if 'widget' not in data or data['widget'] is None:
                 try:
-                    # Tạo frame cho mỗi ảnh
                     img_frame = tk.Frame(self.sign_images_container, bg="#1a1a1a", bd=1, relief=tk.SOLID)
                     img_frame.pack(side=tk.LEFT, padx=3, pady=3)
                     
-                    # Chuyển đổi ảnh OpenCV sang PIL
                     img_rgb = cv2.cvtColor(data['image'], cv2.COLOR_BGR2RGB)
                     img_pil = Image.fromarray(img_rgb)
                     
-                    # Resize ảnh nhỏ lại
                     max_size = 80
                     img_pil.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
                     
-                    # Chuyển sang PhotoImage
                     photo = ImageTk.PhotoImage(img_pil)
                     
-                    # Label hiển thị ảnh
                     img_label = tk.Label(img_frame, image=photo, bg="#1a1a1a")
-                    img_label.image = photo  # Giữ reference
+                    img_label.image = photo
                     img_label.pack()
                     
-                    # Label tên biển báo
                     classesVie = self.read_classes_file('classes_vie.txt')
                     if classesVie and int(label) < len(classesVie):
                         name_vie = classesVie[int(label)]
@@ -598,30 +593,26 @@ class TrafficSignDetectionApp:
                                         font=('Courier New', 8, 'bold'))
                     name_label.pack()
                     
-                    # Lưu widget vào data
                     data['widget'] = img_frame
                     
                 except Exception as e:
-                    print(f"Lỗi hiển thị ảnh biển báo {label}: {e}")
+                    print(f"Lỗi hiển thị ảnh: {e}")
         
-        # Xóa các ảnh đã hết thời gian hiển thị
         for label in labels_to_remove:
             del self.sign_images[label]
     
     def crop_sign_image(self, frame, box):
-        """Cắt ảnh biển báo từ frame"""
+        """Cắt ảnh biển báo"""
         try:
             x1, y1, x2, y2 = box
             x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
             
-            # Đảm bảo tọa độ trong phạm vi frame
             h, w = frame.shape[:2]
             x1 = max(0, x1)
             y1 = max(0, y1)
             x2 = min(w, x2)
             y2 = min(h, y2)
             
-            # Cắt ảnh
             cropped = frame[y1:y2, x1:x2].copy()
             return cropped
         except Exception as e:
@@ -629,52 +620,41 @@ class TrafficSignDetectionApp:
             return None
     
     def get_sign_color(self, label_index):
-        """
-        Lấy màu theo loại biển báo dựa trên ký tự đầu tiên của label
-        P: Red (Prohibitory - Cấm)
-        W: Orange (Warning - Cảnh báo)
-        R: Light Blue (Regulatory - Chỉ dẫn)
-        I: Blue (Information - Thông tin)
-        """
+        """Lấy màu theo loại biển báo"""
         try:
             if self.class_labels and int(label_index) < len(self.class_labels):
                 label_code = self.class_labels[int(label_index)]
                 first_char = label_code[0].upper()
                 
                 if first_char == 'P':
-                    return (220, 20, 60)  # Red - Crimson
+                    return (220, 20, 60)
                 elif first_char == 'W':
-                    return (255, 140, 0)  # Orange
+                    return (255, 140, 0)
                 elif first_char == 'R':
-                    return (135, 206, 250)  # Light Blue
+                    return (135, 206, 250)
                 elif first_char == 'I':
-                    return (30, 144, 255)  # Dodger Blue
+                    return (30, 144, 255)
                 else:
-                    return (0, 200, 0)  # Default Green
+                    return (0, 200, 0)
             else:
-                return (0, 200, 0)  # Default Green
+                return (0, 200, 0)
         except:
-            return (0, 200, 0)  # Default Green
+            return (0, 200, 0)
     
     def draw_popup_notifications(self, frame):
-        """Vẽ popup thông báo tên biển báo trên video với hỗ trợ font tiếng Việt"""
+        """Vẽ popup thông báo"""
         current_time = time.time()
         labels_to_remove = []
         
-        # Chuyển frame sang PIL Image để vẽ text tiếng Việt
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(frame_rgb)
         draw = ImageDraw.Draw(pil_img)
         
-        # Vị trí bắt đầu vẽ popup (từ trên xuống, dời xuống 20px)
         y_offset = 130
         
-        # Tính font size động dựa trên chiều rộng frame để đồng nhất
         frame_h, frame_w = pil_img.size[1], pil_img.size[0]
-        # Font size = 4% chiều rộng frame (tối thiểu 30, tối đa 80)
         dynamic_font_size = max(30, min(80, int(frame_w * 0.04)))
         
-        # Thử tải font tiếng Việt, nếu không có dùng font mặc định
         try:
             font = ImageFont.truetype("arial.ttf", dynamic_font_size)
         except:
@@ -684,32 +664,24 @@ class TrafficSignDetectionApp:
                 font = ImageFont.load_default()
         
         for label, data in self.sign_popup_text.items():
-            # Kiểm tra nếu chưa đủ 2s từ lần đầu ổn định, bỏ qua
             if current_time - data['first_stable'] < self.capture_delay:
                 continue
             
-            # Kiểm tra nếu quá 2s kể từ lần cuối nhìn thấy
             if current_time - data['last_seen'] > self.display_duration:
                 labels_to_remove.append(label)
                 continue
             
-            # Text hiển thị
             text = f"🚦 {data['text']}"
-            
-            # Lấy màu theo loại biển báo
             bg_color = self.get_sign_color(label)
             
-            # Tính kích thước text
             bbox = draw.textbbox((0, 0), text, font=font)
             text_width = bbox[2] - bbox[0]
             text_height = bbox[3] - bbox[1]
             
-            # Vị trí hiển thị (giữa màn hình, từ trên xuống)
             frame_h, frame_w = pil_img.size[1], pil_img.size[0]
             x = (frame_w - text_width) // 2
             y = y_offset
             
-            # Vẽ nền cho text với màu theo loại biển báo
             padding = 20
             draw.rectangle(
                 [(x - padding, y - padding),
@@ -719,21 +691,18 @@ class TrafficSignDetectionApp:
                 width=4
             )
             
-            # Vẽ text
             draw.text((x, y), text, font=font, fill=(255, 255, 255))
             
             y_offset += text_height + 2 * padding + 15
         
-        # Xóa các popup đã hết thời gian
         for label in labels_to_remove:
             del self.sign_popup_text[label]
         
-        # Chuyển PIL Image về OpenCV format
         frame_result = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         return frame_result
 
     def detect_traffic_signs(self, frame):
-        """Nhận diện biển báo với cơ chế ổn định kết quả"""
+        """Nhận diện biển báo"""
         if self.model is None:
             return frame
         try:
@@ -746,40 +715,33 @@ class TrafficSignDetectionApp:
             
             if len(detections) > 0:
                 current_signs = []
-                stable_signs = []  # Các biển đã ổn định
+                stable_signs = []
                 
                 for box in detections:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     cls_id = int(box.cls[0])
                     conf = float(box.conf[0])
                     
-                    # Lấy tên trực tiếp từ model
                     label = self.model.names.get(cls_id, f"cls_{cls_id}")
                     current_signs.append(label)
                     detected_labels_this_frame.add(label)
                     
-                    # Thêm vào buffer
                     self.add_detection_to_buffer(label)
-                    
-                    # Kiểm tra xem detection có ổn định chưa
                     is_stable = self.is_detection_stable(label)
                     
-                    # Chỉ thêm vào history nếu đã ổn định
                     if is_stable:
                         if label not in self.detected_history:
                             self.detected_history.insert(0, label)
                             
-                            # Chụp ảnh biển báo 1 LẦN DUY NHẤT khi lần đầu ổn định
                             cropped_img = self.crop_sign_image(frame, (x1, y1, x2, y2))
                             if cropped_img is not None:
                                 self.sign_images[label] = {
                                     'image': cropped_img,
                                     'first_stable': current_time,
                                     'last_seen': current_time,
-                                    'widget': None  # Widget sẽ được tạo sau
+                                    'widget': None
                                 }
                             
-                            # Thêm popup text với first_stable timestamp
                             classesVie = self.read_classes_file('classes_vie.txt')
                             if classesVie and int(label) < len(classesVie):
                                 name_vie = classesVie[int(label)]
@@ -791,8 +753,9 @@ class TrafficSignDetectionApp:
                                 'first_stable': current_time,
                                 'last_seen': current_time
                             }
+                            
+                            self.speak_text(f"Phát hiện {name_vie}")
                         else:
-                            # Chỉ cập nhật thời gian last_seen, KHÔNG cập nhật ảnh
                             if label in self.sign_images:
                                 self.sign_images[label]['last_seen'] = current_time
                             if label in self.sign_popup_text:
@@ -800,8 +763,7 @@ class TrafficSignDetectionApp:
                         
                         stable_signs.append(label)
                     
-                    # Vẽ bounding box (màu khác nhau cho stable/unstable)
-                    color = (0, 255, 0) if is_stable else (0, 165, 255)  # Xanh lá nếu stable, cam nếu chưa
+                    color = (0, 255, 0) if is_stable else (0, 165, 255)
                     status = "✓" if is_stable else "..."
                     text = f"{status} {label} {conf:.2f}"
                     
@@ -811,7 +773,6 @@ class TrafficSignDetectionApp:
                     cv2.putText(annotated, text, (int(x1)+2, int(y1)-6),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
                 
-                # Cập nhật thông tin
                 unique_current = list(dict.fromkeys(current_signs))
                 if stable_signs:
                     info_text = f"✅ Phát hiện ổn định: {', '.join(list(dict.fromkeys(stable_signs)))} | Đang phát hiện: {len(detections)}"
@@ -819,17 +780,14 @@ class TrafficSignDetectionApp:
                     info_text = f"🔄 Đang xác nhận... ({len(detections)} đối tượng)"
                 self.info_label.config(text=info_text, fg=self.colors['success'])
                 
-                # Cập nhật log chỉ với các detection ổn định
                 self.update_detection_log()
             else:
                 self.info_label.config(text="🔍 Đang quét... Không phát hiện biển báo",
                                        fg=self.colors['text_secondary'])
             
-            # Xóa các buffer không còn được phát hiện (sau buffer_timeout)
             labels_to_remove = []
             for label in self.detection_buffer:
                 if label not in detected_labels_this_frame:
-                    # Lọc timestamps cũ
                     timestamps = [t for t in self.detection_buffer[label] 
                                 if current_time - t < self.buffer_timeout]
                     if not timestamps:
@@ -840,10 +798,7 @@ class TrafficSignDetectionApp:
             for label in labels_to_remove:
                 del self.detection_buffer[label]
             
-            # Vẽ popup thông báo
             annotated = self.draw_popup_notifications(annotated)
-            
-            # Cập nhật hiển thị ảnh biển báo
             self.update_sign_images_display()
             
             return annotated
@@ -854,10 +809,8 @@ class TrafficSignDetectionApp:
     def display_frame(self, frame):
         """Hiển thị frame lên GUI"""
         try:
-            # Chuyển đổi BGR sang RGB
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             
-            # Resize frame để vừa với cửa sổ
             height, width = frame_rgb.shape[:2]
             max_width = 1200
             max_height = 600
@@ -868,13 +821,11 @@ class TrafficSignDetectionApp:
                 new_height = int(height * scale)
                 frame_rgb = cv2.resize(frame_rgb, (new_width, new_height))
             
-            # Chuyển đổi sang PIL Image
             image = Image.fromarray(frame_rgb)
             photo = ImageTk.PhotoImage(image=image)
             
-            # Cập nhật label
             self.video_label.config(image=photo, text="", bg="#000000")
-            self.video_label.image = photo  # Giữ reference
+            self.video_label.image = photo
             
         except Exception as e:
             print(f"Lỗi khi hiển thị frame: {str(e)}")
@@ -886,4 +837,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
