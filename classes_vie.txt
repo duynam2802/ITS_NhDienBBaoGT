@@ -1,59 +1,48 @@
-DP.135	Hết tất cả các lệnh cấm
-P.102	Cấm đi ngược chiều
-P.103a	Cấm xe ô tô
-P.103b	Cấm xe ô tô rẽ phải
-P.103c	Cấm xe ô tô rẽ trái
-P.104	Cấm xe máy (xe mô tô)
-P.106a	Cấm xe ô tô tải
-P.106b	Cấm xe ô tô tải (theo khối lượng chuyên chở)
-P.107a	Cấm xe ôtô khách và xe ôtô tải
-P.112	Cấm người đi bộ
-P.115	Hạn chế tải trọng toàn bộ xe
-P.117	Hạn chế chiều cao
-P.123a	Cấm rẽ trái
-P.123b	Cấm rẽ phải
-P.124a	Cấm quay đầu xe
-P.124b	Cấm xe ô tô quay đầu xe
-P.124c	Cấm rẽ trái và quay đầu xe
-P.125	Cấm vượt
-P.127	Tốc độ tối đa cho phép
-P.128	Cấm sử dụng còi
-P.130	Cấm dừng xe và đỗ xe
-P.131a	Cấm đỗ xe
-P.137	Cấm rẽ trái và rẽ phải
-P.245a*	Đi chậm (Lưu ý: Mã chuẩn hiện nay thường là W.245a)
-R.301a	Hướng đi phải theo (Chỉ được rẽ phải)
-R.301c	Hướng đi phải theo (Chỉ được đi thẳng)
-R.301d	Hướng đi phải theo (Chỉ được rẽ phải)
-R.301e	Hướng đi phải theo (Chỉ được rẽ trái)
-R.302a	Hướng đi vòng chướng ngại vật (sang phải)
-R.302b	Hướng đi vòng chướng ngại vật (sang trái)
-R.303	Nơi giao nhau chạy theo vòng xuyến
-R.407a	Đường một chiều
-R.409	Chỗ quay xe
-R.425	Hầm chui qua đường cho người đi bộ
-R.434	Bến xe buýt
-S.509a	Biển phụ thuyết minh biển chính (thường ghi chú thêm)
-W.201a	Chỗ ngoặt nguy hiểm vòng bên trái
-W.201b	Chỗ ngoặt nguy hiểm vòng bên phải
-W.202a	Nhiều chỗ ngoặt nguy hiểm liên tiếp (trái - phải)
-W.202b	Nhiều chỗ ngoặt nguy hiểm liên tiếp (phải - trái)
-W.203b	Đường bị thu hẹp về phía trái
-W.203c	Đường bị thu hẹp về phía phải
-W.205a	Đường giao nhau cùng cấp
-W.205b	Đường giao nhau cùng cấp (nhánh rẽ phải)
-W.205d	Đường giao nhau cùng cấp (nhánh rẽ trái)
-W.207a	Giao nhau với đường không ưu tiên
-W.207b	Giao nhau với đường không ưu tiên (bên phải)
-W.207c	Giao nhau với đường không ưu tiên (bên trái)
-W.208	Giao nhau với đường ưu tiên
-W.209	Giao nhau có tín hiệu đèn
-W.210	Giao nhau với đường sắt có rào chắn
-W.219	Dốc xuống nguy hiểm
-W.221b	Đường có gờ giảm tốc
-W.224	Đường người đi bộ cắt ngang
-W.225	Trẻ em
-W.227	Công trường
-W.233	Nguy hiểm khác
-W.235	Đường đôi
-W.245a	Đi chậm
+Gộp làn đường
+Nơi đỗ xe
+Tốc độ tối đa theo làn đường
+Bắt đầu khu đông dân cư
+Hạn chế trọng tải toàn bộ xe
+Tốc độ tối thiểu cho phép
+Tốc độ tối đa cho phép (120 km/h)
+Đường có gờ giảm tốc
+Cấm xe khách và xe tải
+Hạn chế chiều cao
+Đi chậm
+Tốc độ tối đa cho phép (80 km/h)
+Cấm bấm còi
+Cấm xe đạp
+Đường người đi bộ cắt ngang
+Đường bị hẹp về phía bên phải
+Giao nhau chạy theo vòng xuyến
+Hết khu đông dân cư
+Bến xe buýt
+Dừng lại
+Chú ý xe đỗ
+Bắt đầu đường ưu tiên
+Vị trí người đi bộ sang ngang
+Cấm xe tải theo giờ
+Chỗ quay xe
+Giao nhau cùng cấp
+Cấm đi ngược chiều
+Cấm đi thẳng (có lưu ý)
+Cấm đỗ xe
+Cấm đỗ xe ngày chẵn
+Cấm dừng xe và đỗ xe
+Cấm người đi bộ
+Cấm ô tô quay đầu xe
+Cấm ô tô rẽ trái
+Cấm rẽ phải
+Cấm rẽ trái và quay đầu xe
+Cấm xe xích lô và xe ba bánh
+Cấm xe máy
+Cấm xe ô tô
+Cấm xe tải dưới 2.5 tấn
+Đường bị hẹp cả hai bên
+Nhiều chỗ ngoặt nguy hiểm liên tiếp
+Chỗ ngoặt nguy hiểm vòng bên phải
+Giao nhau cùng cấp dạng chữ T
+Tốc độ tối đa cho phép (50 km/h)
+Các xe chỉ được đi thẳng và rẽ phải
+Nơi giao nhau chạy theo vòng xuyến
+Giao nhau với đường không ưu tiên

@@ -37,10 +37,14 @@ class TrafficSignDetectionApp:
         # Biến điều khiển
         self.is_camera_active = False
         self.is_video_active = False
+        self.is_paused = False
         self.cap = None
         self.video_path = None
         self.current_frame = None
-        self.detected_history = set()  # Lưu lịch sử các biển báo đã phát hiện
+        self.detected_history = []  # Lưu lịch sử các biển báo (list để giữ thứ tự)
+        
+        # Tải danh sách các lớp từ file classes_vie.txt
+        self.class_names_vie = self.read_classes_file('classes_vie.txt')
         
         # Tạo giao diện
         self.create_widgets()
@@ -60,22 +64,19 @@ class TrafficSignDetectionApp:
         no_marks = ''.join(c for c in nf if unicodedata.category(c) != 'Mn')
         return no_marks.replace('Đ', 'D').replace('đ', 'd')
 
-    def load_class_names(self, path):
-        """Đọc tên lớp và tạo phiên bản không dấu."""
+    def read_classes_file(self, file_path):
+        """Đọc file classes_vie.txt và trả về danh sách các lớp"""
         try:
-            if os.path.exists(path):
-                with open(path, 'r', encoding='utf-8') as f:
-                    lines = [ln.strip() for ln in f if ln.strip()]
-                self.class_names_vie = [name.replace('*', '').strip() for name in lines]
-                self.class_names_vie_ascii = [self.strip_accents(n) for n in self.class_names_vie]
-                print(f"Đã tải {len(self.class_names_vie)} lớp (không dấu).")
-            else:
-                print("Không tìm thấy file classes_vie.txt.")
+            with open(file_path, 'r', encoding='utf-8') as f:
+                classes_vie = [line.strip() for line in f if line.strip()]
+            return classes_vie
+        except FileNotFoundError:
+            print(f"Không tìm thấy file: {file_path}")
+            return []
         except Exception as e:
-            print(f"Lỗi đọc file classes_vie.txt: {e}")
-            self.class_names_vie = []
-            self.class_names_vie_ascii = []
-
+            print(f"Lỗi khi đọc file {file_path}: {e}")
+            return []
+    
     def setup_styles(self):
         """Thiết lập style cho các widget"""
         style = ttk.Style()
@@ -176,6 +177,15 @@ class TrafficSignDetectionApp:
                                      style='Success.TButton',
                                      width=18)
         self.btn_camera.pack(side=tk.LEFT, padx=10)
+        
+        # Nút pause/resume video
+        self.btn_pause = ttk.Button(button_frame,
+                                    text="⏸ Pause",
+                                    command=self.toggle_pause,
+                                    style='Primary.TButton',
+                                    width=18)
+        self.btn_pause.pack(side=tk.LEFT, padx=10)
+        self.btn_pause.config(state='disabled')
         
         # Nút dừng
         btn_stop = ttk.Button(button_frame,
@@ -282,8 +292,14 @@ class TrafficSignDetectionApp:
         )
         
         if file_path:
+            # Reset log khi chạy video mới
+            self.detected_history.clear()
+            self.update_detection_log()
+            
             self.video_path = file_path
             self.is_video_active = True
+            self.is_paused = False
+            self.btn_pause.config(state='normal', text="⏸ Pause")
             self.status_label.config(text=f"Trạng thái: Đang xử lý video - {os.path.basename(file_path)}", 
                                    fg=self.colors['primary'])
             self.status_indicator.config(fg=self.colors['primary'])
@@ -295,6 +311,21 @@ class TrafficSignDetectionApp:
             self.stop_camera()
         else:
             self.start_camera()
+    
+    def toggle_pause(self):
+        """Pause/Resume video"""
+        if not self.is_video_active:
+            return
+        
+        self.is_paused = not self.is_paused
+        if self.is_paused:
+            self.btn_pause.config(text="▶ Resume")
+            self.status_label.config(text="Trạng thái: Video đã tạm dừng", 
+                                   fg=self.colors['warning'])
+        else:
+            self.btn_pause.config(text="⏸ Pause")
+            self.status_label.config(text=f"Trạng thái: Đang xử lý video - {os.path.basename(self.video_path)}", 
+                                   fg=self.colors['primary'])
     
     def start_camera(self):
         """Bắt đầu sử dụng camera"""
@@ -332,6 +363,8 @@ class TrafficSignDetectionApp:
     def stop_all(self):
         """Dừng tất cả"""
         self.is_video_active = False
+        self.is_paused = False
+        self.btn_pause.config(state='disabled', text="⏸ Pause")
         self.stop_camera()
         self.status_label.config(text="Trạng thái: Đã dừng", 
                                fg=self.colors['text_secondary'])
@@ -354,21 +387,27 @@ class TrafficSignDetectionApp:
             delay = int(1000 / fps) if fps > 0 else 30
             
             while self.is_video_active:
-                ret, frame = cap.read()
-                if not ret:
-                    break
-                
-                # Nhận diện biển báo
-                frame = self.detect_traffic_signs(frame)
-                
-                # Hiển thị frame
-                self.display_frame(frame)
-                
-                # Điều chỉnh tốc độ phát
-                cv2.waitKey(delay)
+                if not self.is_paused:
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    
+                    # Nhận diện biển báo
+                    frame = self.detect_traffic_signs(frame)
+                    
+                    # Hiển thị frame
+                    self.display_frame(frame)
+                    
+                    # Điều chỉnh tốc độ phát
+                    cv2.waitKey(delay)
+                else:
+                    # Khi pause, chỉ đợi một chút
+                    cv2.waitKey(100)
             
             cap.release()
             self.is_video_active = False
+            self.is_paused = False
+            self.btn_pause.config(state='disabled', text="⏸ Pause")
             self.status_label.config(text="Trạng thái: Video đã kết thúc", 
                                    fg=self.colors['text_secondary'])
             self.status_indicator.config(fg=self.colors['text_secondary'])
@@ -401,14 +440,15 @@ class TrafficSignDetectionApp:
         thread.start()
     
     def update_detection_log(self):
-        """Cập nhật log biển báo đã phát hiện (tích lũy, không biến mất)"""
+        """Cập nhật log biển báo đã phát hiện (biển mới nhất ở đầu)"""
+        classesVie = self.read_classes_file('classes_vie.txt')
         if not self.detected_history:
             log_text = "Log: Chưa phát hiện"
         else:
-            signs = sorted(list(self.detected_history))
             log_lines = ["=== LOG BIỂN BÁO ==="]
-            for sign in signs:
-                log_lines.append(f"✓ {sign}")
+            # Hiển thị theo thứ tự ngược (mới nhất ở đầu)
+            for sign in self.detected_history:
+                log_lines.append(f"✓ {sign} {classesVie[int(sign)]}")
             log_text = "\n".join(log_lines)
         self.overlay_panel.config(text=log_text)
 
@@ -432,8 +472,9 @@ class TrafficSignDetectionApp:
                     label = self.model.names.get(cls_id, f"cls_{cls_id}")
                     current_signs.append(label)
                     
-                    # Thêm vào lịch sử
-                    self.detected_history.add(label)
+                    # Thêm vào lịch sử (mới nhất ở đầu, không trùng)
+                    if label not in self.detected_history:
+                        self.detected_history.insert(0, label)
                     
                     # Vẽ bounding box và label
                     text = f"{label} {conf:.2f}"
