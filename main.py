@@ -7,6 +7,8 @@ import threading
 from ultralytics import YOLO
 import os
 import unicodedata
+import time
+from collections import defaultdict
 
 class TrafficSignDetectionApp:
     def __init__(self, root):
@@ -42,6 +44,11 @@ class TrafficSignDetectionApp:
         self.video_path = None
         self.current_frame = None
         self.detected_history = []  # Lưu lịch sử các biển báo (list để giữ thứ tự)
+        
+        # Cơ chế ổn định kết quả (stabilization)
+        self.detection_buffer = defaultdict(list)  # {label: [timestamps]}
+        self.stable_duration = 0.4  # Thời gian ổn định (giây): 0.3-0.5s
+        self.buffer_timeout = 1.0  # Xóa buffer sau 1s không phát hiện
         
         # Tải danh sách các lớp từ file classes_vie.txt
         self.class_names_vie = self.read_classes_file('classes_vie.txt')
@@ -294,6 +301,7 @@ class TrafficSignDetectionApp:
         if file_path:
             # Reset log khi chạy video mới
             self.detected_history.clear()
+            self.detection_buffer.clear()
             self.update_detection_log()
             
             self.video_path = file_path
@@ -332,6 +340,10 @@ class TrafficSignDetectionApp:
         if self.is_video_active:
             self.stop_all()
         
+        # Reset buffer khi bật camera
+        self.detection_buffer.clear()
+        self.detected_history.clear()
+        
         self.cap = cv2.VideoCapture(0)
         if not self.cap.isOpened():
             messagebox.showerror("Lỗi", "Không thể mở camera!")
@@ -358,6 +370,7 @@ class TrafficSignDetectionApp:
                                text="Chưa có video\n\nChọn video hoặc bật camera để bắt đầu",
                                fg=self.colors['text_secondary'])
         self.detected_history.clear()
+        self.detection_buffer.clear()
         self.overlay_panel.config(text="Log: Chưa phát hiện")
     
     def stop_all(self):
@@ -451,9 +464,35 @@ class TrafficSignDetectionApp:
                 log_lines.append(f"✓ {sign} {classesVie[int(sign)]}")
             log_text = "\n".join(log_lines)
         self.overlay_panel.config(text=log_text)
+    
+    def is_detection_stable(self, label):
+        """
+        Kiểm tra xem một detection có ổn định hay không
+        Chỉ trả về True nếu label được phát hiện liên tục trong stable_duration giây
+        """
+        current_time = time.time()
+        timestamps = self.detection_buffer[label]
+        
+        # Lọc bỏ các timestamp cũ (ngoài buffer_timeout)
+        timestamps = [t for t in timestamps if current_time - t < self.buffer_timeout]
+        self.detection_buffer[label] = timestamps
+        
+        if not timestamps:
+            return False
+        
+        # Kiểm tra khoảng thời gian từ lần phát hiện đầu đến lần cuối
+        time_span = current_time - timestamps[0]
+        
+        # Ổn định nếu: đã phát hiện liên tục >= stable_duration
+        return time_span >= self.stable_duration
+    
+    def add_detection_to_buffer(self, label):
+        """Thêm detection vào buffer với timestamp hiện tại"""
+        current_time = time.time()
+        self.detection_buffer[label].append(current_time)
 
     def detect_traffic_signs(self, frame):
-        """Nhận diện biển báo và hiển thị tên mà model trả về"""
+        """Nhận diện biển báo với cơ chế ổn định kết quả"""
         if self.model is None:
             return frame
         try:
@@ -461,8 +500,13 @@ class TrafficSignDetectionApp:
             detections = results[0].boxes
             annotated = frame.copy()
             
+            current_time = time.time()
+            detected_labels_this_frame = set()
+            
             if len(detections) > 0:
                 current_signs = []
+                stable_signs = []  # Các biển đã ổn định
+                
                 for box in detections:
                     x1, y1, x2, y2 = box.xyxy[0].tolist()
                     cls_id = int(box.cls[0])
@@ -471,30 +515,59 @@ class TrafficSignDetectionApp:
                     # Lấy tên trực tiếp từ model
                     label = self.model.names.get(cls_id, f"cls_{cls_id}")
                     current_signs.append(label)
+                    detected_labels_this_frame.add(label)
                     
-                    # Thêm vào lịch sử (mới nhất ở đầu, không trùng)
-                    if label not in self.detected_history:
-                        self.detected_history.insert(0, label)
+                    # Thêm vào buffer
+                    self.add_detection_to_buffer(label)
                     
-                    # Vẽ bounding box và label
-                    text = f"{label} {conf:.2f}"
-                    cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+                    # Kiểm tra xem detection có ổn định chưa
+                    is_stable = self.is_detection_stable(label)
+                    
+                    # Chỉ thêm vào history nếu đã ổn định
+                    if is_stable:
+                        if label not in self.detected_history:
+                            self.detected_history.insert(0, label)
+                        stable_signs.append(label)
+                    
+                    # Vẽ bounding box (màu khác nhau cho stable/unstable)
+                    color = (0, 255, 0) if is_stable else (0, 165, 255)  # Xanh lá nếu stable, cam nếu chưa
+                    status = "✓" if is_stable else "..."
+                    text = f"{status} {label} {conf:.2f}"
+                    
+                    cv2.rectangle(annotated, (int(x1), int(y1)), (int(x2), int(y2)), color, 2)
                     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                    cv2.rectangle(annotated, (int(x1), int(y1)-th-8), (int(x1)+tw+4, int(y1)), (0, 255, 0), -1)
+                    cv2.rectangle(annotated, (int(x1), int(y1)-th-8), (int(x1)+tw+4, int(y1)), color, -1)
                     cv2.putText(annotated, text, (int(x1)+2, int(y1)-6),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
                 
-                # Lọc unique cho info hiện tại
+                # Cập nhật thông tin
                 unique_current = list(dict.fromkeys(current_signs))
-                info_text = f"✅ Phát hiện {len(detections)} đối tượng: {', '.join(unique_current)}"
+                if stable_signs:
+                    info_text = f"✅ Phát hiện ổn định: {', '.join(list(dict.fromkeys(stable_signs)))} | Đang phát hiện: {len(detections)}"
+                else:
+                    info_text = f"🔄 Đang xác nhận... ({len(detections)} đối tượng)"
                 self.info_label.config(text=info_text, fg=self.colors['success'])
                 
-                # Cập nhật log tích lũy
+                # Cập nhật log chỉ với các detection ổn định
                 self.update_detection_log()
             else:
                 self.info_label.config(text="🔍 Đang quét... Không phát hiện biển báo",
                                        fg=self.colors['text_secondary'])
-                # Giữ nguyên log (không xóa detected_history)
+            
+            # Xóa các buffer không còn được phát hiện (sau buffer_timeout)
+            labels_to_remove = []
+            for label in self.detection_buffer:
+                if label not in detected_labels_this_frame:
+                    # Lọc timestamps cũ
+                    timestamps = [t for t in self.detection_buffer[label] 
+                                if current_time - t < self.buffer_timeout]
+                    if not timestamps:
+                        labels_to_remove.append(label)
+                    else:
+                        self.detection_buffer[label] = timestamps
+            
+            for label in labels_to_remove:
+                del self.detection_buffer[label]
             
             return annotated
         except Exception as e:
