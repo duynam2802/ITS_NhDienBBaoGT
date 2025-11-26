@@ -48,14 +48,15 @@ class TrafficSignDetectionApp:
         
         # Cơ chế ổn định kết quả (stabilization)
         self.detection_buffer = defaultdict(list)  # {label: [timestamps]}
-        self.stable_duration = 0.5  # Thời gian ổn định (giây): 0.3-0.5s
-        self.buffer_timeout = 1.0  # Xóa buffer sau 1s không phát hiện
+        self.stable_duration = 0.5  # Thời gian ổn định để xác nhận detection (0.5 giây)
+        self.buffer_timeout = 2.0  # Xóa buffer sau 2s không phát hiện
         
         # Quản lý hiển thị log và ảnh biển báo
         self.show_log = True  # Bật/tắt log
-        self.sign_images = {}  # {label: {'image': cropped_img, 'last_seen': timestamp}}
-        self.sign_popup_text = {}  # {label: {'text': name_vie, 'last_seen': timestamp}}
+        self.sign_images = {}  # {label: {'image': cropped_img, 'first_stable': timestamp, 'last_seen': timestamp, 'widget': frame_widget}}
+        self.sign_popup_text = {}  # {label: {'text': name_vie, 'first_stable': timestamp, 'last_seen': timestamp}}
         self.display_duration = 2.0  # Thời gian hiển thị sau khi mất (2 giây)
+        self.capture_delay = 2.0  # Thời gian chờ trước khi hiển thị ảnh/popup (2 giây từ lúc ổn định)
         
         # Tải danh sách các lớp từ file classes_vie.txt
         self.class_names_vie = self.read_classes_file('classes_vie.txt')
@@ -542,57 +543,66 @@ class TrafficSignDetectionApp:
         self.detection_buffer[label].append(current_time)
     
     def update_sign_images_display(self):
-        """Cập nhật hiển thị các ảnh biển báo đã phát hiện"""
-        # Xóa tất cả widget con hiện tại
-        for widget in self.sign_images_container.winfo_children():
-            widget.destroy()
-        
+        """Cập nhật hiển thị các ảnh biển báo đã phát hiện - CHỈ VẼ MỘT LẦN"""
         current_time = time.time()
         labels_to_remove = []
         
-        # Hiển thị các ảnh biển báo
-        for label, data in self.sign_images.items():
+        # Kiểm tra và xóa các ảnh đã hết thời gian
+        for label, data in list(self.sign_images.items()):
             # Kiểm tra nếu quá 2s kể từ lần cuối nhìn thấy
             if current_time - data['last_seen'] > self.display_duration:
+                # Xóa widget nếu có
+                if 'widget' in data and data['widget']:
+                    data['widget'].destroy()
                 labels_to_remove.append(label)
                 continue
             
-            try:
-                # Tạo frame cho mỗi ảnh
-                img_frame = tk.Frame(self.sign_images_container, bg="#1a1a1a", bd=1, relief=tk.SOLID)
-                img_frame.pack(side=tk.LEFT, padx=3, pady=3)
-                
-                # Chuyển đổi ảnh OpenCV sang PIL
-                img_rgb = cv2.cvtColor(data['image'], cv2.COLOR_BGR2RGB)
-                img_pil = Image.fromarray(img_rgb)
-                
-                # Resize ảnh nhỏ lại
-                max_size = 80
-                img_pil.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
-                
-                # Chuyển sang PhotoImage
-                photo = ImageTk.PhotoImage(img_pil)
-                
-                # Label hiển thị ảnh
-                img_label = tk.Label(img_frame, image=photo, bg="#1a1a1a")
-                img_label.image = photo  # Giữ reference
-                img_label.pack()
-                
-                # Label tên biển báo
-                classesVie = self.read_classes_file('classes_vie.txt')
-                if classesVie and int(label) < len(classesVie):
-                    name_vie = classesVie[int(label)]
-                else:
-                    name_vie = label
-                
-                name_label = tk.Label(img_frame, 
-                                    text=label,
-                                    bg="#1a1a1a",
-                                    fg="#00ff00",
-                                    font=('Courier New', 8, 'bold'))
-                name_label.pack()
-            except Exception as e:
-                print(f"Lỗi hiển thị ảnh biển báo {label}: {e}")
+            # Kiểm tra nếu chưa đủ 2s từ lần đầu ổn định
+            if current_time - data['first_stable'] < self.capture_delay:
+                continue
+            
+            # Nếu widget chưa được tạo, tạo mới
+            if 'widget' not in data or data['widget'] is None:
+                try:
+                    # Tạo frame cho mỗi ảnh
+                    img_frame = tk.Frame(self.sign_images_container, bg="#1a1a1a", bd=1, relief=tk.SOLID)
+                    img_frame.pack(side=tk.LEFT, padx=3, pady=3)
+                    
+                    # Chuyển đổi ảnh OpenCV sang PIL
+                    img_rgb = cv2.cvtColor(data['image'], cv2.COLOR_BGR2RGB)
+                    img_pil = Image.fromarray(img_rgb)
+                    
+                    # Resize ảnh nhỏ lại
+                    max_size = 80
+                    img_pil.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+                    
+                    # Chuyển sang PhotoImage
+                    photo = ImageTk.PhotoImage(img_pil)
+                    
+                    # Label hiển thị ảnh
+                    img_label = tk.Label(img_frame, image=photo, bg="#1a1a1a")
+                    img_label.image = photo  # Giữ reference
+                    img_label.pack()
+                    
+                    # Label tên biển báo
+                    classesVie = self.read_classes_file('classes_vie.txt')
+                    if classesVie and int(label) < len(classesVie):
+                        name_vie = classesVie[int(label)]
+                    else:
+                        name_vie = label
+                    
+                    name_label = tk.Label(img_frame, 
+                                        text=label,
+                                        bg="#1a1a1a",
+                                        fg="#00ff00",
+                                        font=('Courier New', 8, 'bold'))
+                    name_label.pack()
+                    
+                    # Lưu widget vào data
+                    data['widget'] = img_frame
+                    
+                except Exception as e:
+                    print(f"Lỗi hiển thị ảnh biển báo {label}: {e}")
         
         # Xóa các ảnh đã hết thời gian hiển thị
         for label in labels_to_remove:
@@ -656,21 +666,29 @@ class TrafficSignDetectionApp:
         pil_img = Image.fromarray(frame_rgb)
         draw = ImageDraw.Draw(pil_img)
         
-        # Vị trí bắt đầu vẽ popup (từ trên xuống, dời xuống 10px)
-        y_offset = 110
+        # Vị trí bắt đầu vẽ popup (từ trên xuống, dời xuống 20px)
+        y_offset = 130
         
-        # Thử tải font tiếng Việt, nếu không có dùng font mặc định (tăng size lên)
+        # Tính font size động dựa trên chiều rộng frame để đồng nhất
+        frame_h, frame_w = pil_img.size[1], pil_img.size[0]
+        # Font size = 4% chiều rộng frame (tối thiểu 30, tối đa 80)
+        dynamic_font_size = max(30, min(80, int(frame_w * 0.04)))
+        
+        # Thử tải font tiếng Việt, nếu không có dùng font mặc định
         try:
-            # Thử các font phổ biến hỗ trợ tiếng Việt trên Windows (size 50)
-            font = ImageFont.truetype("arial.ttf", 50)
+            font = ImageFont.truetype("arial.ttf", dynamic_font_size)
         except:
             try:
-                font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", 50)
+                font = ImageFont.truetype("C:\\Windows\\Fonts\\arial.ttf", dynamic_font_size)
             except:
                 font = ImageFont.load_default()
         
         for label, data in self.sign_popup_text.items():
-            # Kiểm tra nếu quá 2s
+            # Kiểm tra nếu chưa đủ 2s từ lần đầu ổn định, bỏ qua
+            if current_time - data['first_stable'] < self.capture_delay:
+                continue
+            
+            # Kiểm tra nếu quá 2s kể từ lần cuối nhìn thấy
             if current_time - data['last_seen'] > self.display_duration:
                 labels_to_remove.append(label)
                 continue
@@ -751,15 +769,17 @@ class TrafficSignDetectionApp:
                         if label not in self.detected_history:
                             self.detected_history.insert(0, label)
                             
-                            # Cắt và lưu ảnh biển báo
+                            # Chụp ảnh biển báo 1 LẦN DUY NHẤT khi lần đầu ổn định
                             cropped_img = self.crop_sign_image(frame, (x1, y1, x2, y2))
                             if cropped_img is not None:
                                 self.sign_images[label] = {
                                     'image': cropped_img,
-                                    'last_seen': current_time
+                                    'first_stable': current_time,
+                                    'last_seen': current_time,
+                                    'widget': None  # Widget sẽ được tạo sau
                                 }
                             
-                            # Thêm popup text
+                            # Thêm popup text với first_stable timestamp
                             classesVie = self.read_classes_file('classes_vie.txt')
                             if classesVie and int(label) < len(classesVie):
                                 name_vie = classesVie[int(label)]
@@ -768,10 +788,11 @@ class TrafficSignDetectionApp:
                             
                             self.sign_popup_text[label] = {
                                 'text': name_vie,
+                                'first_stable': current_time,
                                 'last_seen': current_time
                             }
                         else:
-                            # Cập nhật thời gian last_seen
+                            # Chỉ cập nhật thời gian last_seen, KHÔNG cập nhật ảnh
                             if label in self.sign_images:
                                 self.sign_images[label]['last_seen'] = current_time
                             if label in self.sign_popup_text:
